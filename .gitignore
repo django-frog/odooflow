@@ -1,0 +1,19 @@
+# Python artifacts
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+*.log
+
+# Virtual environments
+.env
+.venv
+
+# Editor settings
+.vscode/
+.idea/
+
+# TODO tasks
+todo.md
