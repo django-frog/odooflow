@@ -103,6 +103,16 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 ---
 
+## WISH-LIST:
+
+Move this CLI into fully-integrated Odoo environment, using Odoo, users can create issues, add the amount of details, then sync these issues with Odooflow.
+
+We can do integration with any code agent to help developers to achieve these issues 
+
+same thing for pipelines, I think it will be amazing if developers can build pipelines using Odoo, then apply the same pipelines using Odooflow.
+
+I have many things in my head, I will back soon to this project.
+
 ## 👨‍💻 Author
 
 Made with ❤️ by Mohammad A. Hamdan
