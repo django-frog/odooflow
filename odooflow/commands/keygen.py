@@ -11,6 +11,7 @@ def generate_ssh_key(
     key_name: str = typer.Option(),
     output_dir: Optional[str] = typer.Option(),
     overwrite: bool = typer.Option(),
+    passphrase: Optional[str] = typer.Option(None, help="Passphrase for the SSH key"),
 ):
     typer.secho("🔐 Generating SSH key pair...", fg="cyan")
 
@@ -38,7 +39,7 @@ def generate_ssh_key(
                 "-b", "4096",
                 "-f", str(private_key_path),
                 "-C", DEFAULT_COMMENT,
-                "-N", ""  # Empty passphrase
+                "-N", passphrase if passphrase else "",
             ]
             subprocess.run(command, check=True)
         else:

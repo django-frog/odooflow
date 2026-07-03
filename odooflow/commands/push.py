@@ -1,5 +1,6 @@
 import typer
 from pathlib import Path
+from typing import Optional
 from git import Repo, GitCommandError
 import getpass
 
@@ -8,7 +9,7 @@ from odooflow.utils.env import read_env_file
 from odooflow.utils.ssh import upload_directory_via_ssh
 
 
-EXCLUDED_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache", ".pytest_cache"}
+EXCLUDED_DIRS = {".git", "__pycache__", ".venv", "node_modules", ".mypy_cache", ".pytest_cache", ".env", ".odooflowrc", ".odooflow.env.json"}
 
 def get_gitignore_exclusions(base_path: Path):
     gitignore_path = base_path / ".gitignore"
@@ -32,7 +33,7 @@ def get_gitignore_exclusions(base_path: Path):
 
 
 
-def push_command(remote_only: bool = False):
+def push_command(remote_only: bool = False, exec_cmd: Optional[str] = None):
     cwd = Path.cwd()
 
     # Load config and env
@@ -54,8 +55,8 @@ def push_command(remote_only: bool = False):
 
     # Git Push (if not remote only)
     if not remote_only:
-        repo = remote_config.get("repo", {})
-        if not repo:
+        repo_config = remote_config.get("repo", {})
+        if not repo_config:
             typer.secho(f"❌ No repo config provided", fg="red")
             raise typer.Exit(1)
         repo_url = remote_config.get("repo")
@@ -63,6 +64,9 @@ def push_command(remote_only: bool = False):
 
         try:
             repo = Repo(cwd)
+            if repo.head.is_detached:
+                typer.secho("❌ Git repository is in a detached HEAD state. Cannot push.", fg="red")
+                raise typer.Exit(1)
             active_branch = repo.active_branch.name
             branch_to_push = branch or active_branch
 
@@ -90,10 +94,23 @@ def push_command(remote_only: bool = False):
         typer.secho(f"❌ Incomplete server config. Required keys: {', '.join(required_keys)}", fg="red")
         raise typer.Exit(1)
 
-    key_path = server.get("key")
-    password = None
-    if not key_path:
+    key_path = server.get("key") or server.get("key_path")
+    password = server.get("password")
+    if not key_path and not password:
         password = getpass.getpass("🔑 Enter SSH password: ")
+
+    final_exec_cmd = exec_cmd or server.get("post_push_cmd")
+
+    def _report_post_exec(stdout_text: str, stderr_text: str, exit_status: int):
+        if stdout_text:
+            typer.secho(stdout_text, fg="cyan")
+        if exit_status != 0:
+            typer.secho(
+                f"❌ Post-upload command failed (exit {exit_status}): {stderr_text.strip() or '(no stderr)'}",
+                fg="red",
+                bold=True,
+            )
+            raise typer.Exit(1)
 
     try:
         typer.secho("📤 Uploading project to the test server...", fg="cyan")
@@ -105,7 +122,9 @@ def push_command(remote_only: bool = False):
             port=int(server.get("port", 22)),
             key_path=key_path,
             password=password,
-            exclude_dirs=excluded_dirs
+            exclude_dirs=excluded_dirs,
+            post_exec_cmd=final_exec_cmd,
+            on_post_exec=_report_post_exec if final_exec_cmd else None,
         )
         typer.secho("✅ Project uploaded successfully.", fg="green")
     except Exception as e:

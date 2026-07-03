@@ -9,6 +9,7 @@ DEFAULT_CONFIG = {
     "manifest_file": "__manifest__.py",
     "core_modules" : ["base", "web", "mail", "sale", "account"],
     "sync_keys" : ["name", "author", "license", "version", "depends"],
+    "gitlab_url": "https://gitlab.ebtech-solution.com",
 }
 
 CONFIG_FILENAME = ".odooflowrc"
@@ -21,8 +22,14 @@ def load_config() -> Dict:
     if path.exists():
         try:
             return json.loads(path.read_text())
-        except Exception:
-            return DEFAULT_CONFIG.copy()
+        except json.JSONDecodeError as e:
+            typer.secho(
+                f"❌ Error: Config file at {path} is corrupted (invalid JSON: {e}). "
+                f"Please fix or delete the file before running again to avoid overwriting it.",
+                fg="red",
+                bold=True,
+            )
+            raise typer.Exit(code=1)
     return DEFAULT_CONFIG.copy()
 
 def save_config(config: Dict):
@@ -46,4 +53,4 @@ def get_access_token():
 
 def get_core_modules_from_config() -> set:
     config = load_config()
-    return set(config.get("clone", {}).get("core_modules", []))
+    return set(config.get("core_modules", DEFAULT_CONFIG.get("core_modules", [])))

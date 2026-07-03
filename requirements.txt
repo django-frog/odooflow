@@ -22,8 +22,6 @@ markdown-it-py==3.0.0
 mdurl==0.1.2
 more-itertools==10.7.0
 nh3==0.2.21
-# Editable install with no version control (odooflow==0.1.0)
--e /home/mohammad/Desktop/odoo_projects/odooflow
 packaging==25.0
 paramiko==3.5.1
 pycparser==2.22
@@ -45,3 +43,5 @@ typer==0.16.0
 typing-extensions==4.14.0
 urllib3==2.4.0
 zipp==3.22.0
+pytest>=8.0.0
+pytest-cov>=4.0.0

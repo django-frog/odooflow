@@ -35,14 +35,13 @@ def config(
     if add_core_module:
         modules = [m.strip() for m in add_core_module.split(",") if m.strip()]
         if modules:
-            clone_config = current_config.setdefault("clone", {})
-            existing_modules = set(clone_config.get(
+            existing_modules = set(current_config.get(
                 "core_modules",
                 config_manager.DEFAULT_CONFIG.get("core_modules", [])
             ))
             new_modules = set(modules)
             combined_modules = sorted(existing_modules.union(new_modules))
-            clone_config["core_modules"] = combined_modules
+            current_config["core_modules"] = combined_modules
             updated = True
             typer.secho(f"✅ Added core module(s): {', '.join(new_modules)}", fg="green")
 
