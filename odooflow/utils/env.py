@@ -1,4 +1,6 @@
+import ast
 import json
+import typer
 from pathlib import Path
 from pprint import pformat
 from rich import print
@@ -11,10 +13,10 @@ MANIFEST_FILENAME = config["manifest_file"]
 
 def read_manifest(path: Path):
     try:
-        return eval(path.read_text())
-    except Exception as e:
-        print(f"[red]Error reading manifest: {e}[/red]")
-        return {}
+        return ast.literal_eval(path.read_text())
+    except (SyntaxError, ValueError) as e:
+        typer.secho(f"❌ Error parsing manifest {path}: {e}", fg="red", bold=True)
+        raise typer.Exit(1)
 
 def update_manifest(path: Path, updates: dict):
     manifest = read_manifest(path)
@@ -22,7 +24,7 @@ def update_manifest(path: Path, updates: dict):
 
     formatted_manifest = pformat(manifest, indent=4, width=100)
     content = f"# Automatically updated by odooflow\n{formatted_manifest}"
-    
+
     path.write_text(content)
     print(f"[green]Updated {MANIFEST_FILENAME}[/green]")
 

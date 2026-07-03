@@ -1,30 +1,38 @@
 # 🌀 Odooflow CLI
 
-**Odooflow CLI** is a command-line interface tool designed to streamline the development workflow for Odoo projects. It helps clone Odoo modules (and their dependencies), handles GitLab lookups, and provides options for deep recursive cloning.
+**OdooFlow CLI** is a command-line interface tool designed to streamline the development workflow for Odoo projects. It helps clone Odoo modules (and their dependencies), handles GitLab lookups, and provides bounded recursive cloning via a configurable depth.
 
 ## 🚀 Features
 
 - Clone an Odoo module by Git URL
-- Recursively resolve and clone all dependencies
+- Recursively resolve and clone dependencies up to a configurable depth
 - Smart skip of Odoo core modules
 - Branch selection for cloning
+- Post-push command execution on the remote server
+- Built-in SSH key generation
 - Helpful and colorful CLI output
-- Built using [Typer](https://typer.tiangolo.com/) and Python 3.9+
+- Built using [Typer](https://typer.tiangolo.com/) and Python 3.7+
 
 ---
 
 ## 📦 Installation
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/odooflow-cli.git
+git clone https://github.com/anomalyco/odooflow-cli.git
 cd odooflow-cli
 pip install .
 ```
 
-Or install directly from source for development:
+Or install directly from source for development (with test/lint extras):
 
 ```bash
-pip install -e .
+pip install -e .[dev]
+```
+
+Install from PyPI (once published):
+
+```bash
+pip install odooflow-cli
 ```
 
 ---
@@ -34,16 +42,33 @@ pip install -e .
 Once installed, you can use the CLI by running:
 
 ```bash
-odooflow clone --url <GIT_REPO_URL> [--branch <BRANCH>] [--deep]
+odooflow --help
 ```
 
-### 🔹 Options:
+### Available Commands:
 
-| Flag        | Description                              |
-|-------------|------------------------------------------|
-| `--url`     | Full HTTP URL of the module repo         |
-| `--branch`  | (Optional) Git branch to clone from      |
-| `--deep`    | Recursively clone all dependencies       |
+- **`init`**: Initialize the Odoo module environment file and sync metadata with manifest
+- **`sync-env`**: Sync the environment file from manifest
+- **`config`**: Update or show OdooFlow CLI configuration
+- **`clone`**: Clone a module and its dependencies from a git repository
+- **`remote`**: Manage remote connections for Git and deployment server
+- **`ssh-keygen`**: Generate a secure SSH key pair
+- **`push`**: Push the current Git branch and upload the project to the test server
+
+### Clone Command Options:
+
+| Flag           | Description                                                                                            |
+|----------------|--------------------------------------------------------------------------------------------------------|
+| `--url`        | Full HTTP URL of the module repo                                                                       |
+| `--branch`/`-b`| (Optional) Git branch to clone from                                                                    |
+| `--depth`/`-d` | Max dependency depth to clone. `1` clones only the target module, `2` clones target + immediate deps, etc. (default: `1`) |
+
+### Push Command Options:
+
+| Flag            | Description                                                                 |
+|-----------------|-----------------------------------------------------------------------------|
+| `--remote-only` | Skip Git push and only upload to server                                     |
+| `--exec`        | Custom shell command to execute on the server after pushing                 |
 
 ### 🔍 Examples:
 
@@ -59,10 +84,34 @@ Clone with specific branch:
 odooflow clone --url https://gitlab.com/mygroup/my_odoo_module.git --branch 17.0
 ```
 
-Clone deeply with dependencies:
+Clone target + immediate dependencies (depth 2):
 
 ```bash
-odooflow clone --url https://gitlab.com/mygroup/my_odoo_module.git --deep
+odooflow clone --url https://gitlab.com/mygroup/my_odoo_module.git --depth 2
+```
+
+Clone the full dependency tree (depth 5):
+
+```bash
+odooflow clone --url https://gitlab.com/mygroup/my_odoo_module.git --depth 5
+```
+
+Push current branch to Git and upload to the configured server:
+
+```bash
+odooflow push
+```
+
+Push and execute a custom command on the remote server after upload:
+
+```bash
+odooflow push --exec "sudo systemctl restart odoo"
+```
+
+Skip Git push, only upload to server:
+
+```bash
+odooflow push --remote-only
 ```
 
 ---
@@ -70,17 +119,28 @@ odooflow clone --url https://gitlab.com/mygroup/my_odoo_module.git --deep
 ## 📁 Project Structure
 
 ```
-odooflow-cli/
+odooflow/
 ├── odooflow/
 │   ├── __init__.py
-│   ├── config.py
-│   ├── utils.py
-│   ├── gitlab.py
-│   └── clone.py
+│   ├── cli.py
+│   ├── config_manager.py
+│   ├── commands/
+│   │   ├── __init__.py
+│   │   ├── clone_module.py
+│   │   ├── config.py
+│   │   ├── init_module_env.py
+│   │   ├── keygen.py
+│   │   ├── push.py
+│   │   ├── remote.py
+│   │   └── sync_env.py
+│   └── utils/
+│       ├── env.py
+│       └── ssh.py
 ├── tests/
 ├── README.md
+├── requirements.txt
 ├── pyproject.toml
-└── setup.py
+└── LICENSE
 ```
 
 ---
@@ -107,7 +167,7 @@ This project is licensed under the MIT License. See the [LICENSE](LICENSE) file 
 
 Move this CLI into fully-integrated Odoo environment, using Odoo, users can create issues, add the amount of details, then sync these issues with Odooflow.
 
-We can do integration with any code agent to help developers to achieve these issues 
+We can do integration with any code agent to help developers to achieve these issues
 
 same thing for pipelines, I think it will be amazing if developers can build pipelines using Odoo, then apply the same pipelines using Odooflow.
 

@@ -21,7 +21,7 @@ def init_manifest(
     """
     Initialize the Odoo module environment file and sync metadata with manifest.
     """
-    init_module_env(author, odoo_version, license_name, website)
+    init_module_env(author=author, odoo_version=odoo_version, license_name=license_name, website=website)
 
 @app.command(name="sync-env")
 def sync_env(
@@ -38,7 +38,7 @@ def config(
     manifest_file: Optional[str] = typer.Option(None, help="Set custom manifest file name"),
     access_token : Optional[str] = typer.Option(None, help="Set Git access token"),
     add_core_module: Optional[str] = typer.Option(None, "--add-core-module", help="Comma-separated list of core modules to add"),
-    sync_keys: Optional[List[str]] = typer.Option(None, help="Set default keys to sync from manifest to .env (comma-separated)"),
+    sync_keys: Optional[str] = typer.Option(None, help="Set default keys to sync from manifest to .env (comma-separated)"),
     show: Optional[bool] = typer.Option(False, "--show", help="Show current config")
 ):
     """
@@ -51,12 +51,12 @@ def config(
 def clone_command(
     repo_url: str = typer.Argument(..., help="HTTP URL of the module repository."),
     branch: Optional[str] = typer.Option(None, "--branch", '-b', help="Branch to clone"),
-    deep: bool = typer.Option(False, "--deep", help="Enable deep clone (clone all levels of dependencies)")
+    depth: int = typer.Option(1, "--depth", "-d", help="Max dependency depth to clone. 1 clones only the target module, 2 clones target + immediate dependencies, etc.")
 ):
     """
     Clone a module and its dependencies from a git repository.
     """
-    clone_module_command(repo_url, branch, deep)
+    clone_module_command(repo_url, branch, depth)
 
 
 @app.command()
@@ -68,7 +68,6 @@ def remote(
     """
     Manage remote connections for Git and deployment server.
     """
-    print(server_json)
     remote_command(
         add_repo=add_repo,
         server_json=server_json, 
@@ -88,11 +87,14 @@ def generate_ssh_key(
 
 
 @app.command()
-def push(remote_only: bool = typer.Option(False, "--remote-only", help="Skip Git push and only upload to server")):
+def push(
+    remote_only: bool = typer.Option(False, "--remote-only", help="Skip Git push and only upload to server"),
+    exec_cmd: Optional[str] = typer.Option(None, "--exec", help="Custom shell command to execute on the server after pushing"),
+):
     """
     Push the current Git branch and upload the project to the test server.
     """
-    push_command(remote_only=remote_only)
+    push_command(remote_only=remote_only, exec_cmd=exec_cmd)
 
 
 

@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional, Set
 import paramiko
+import hashlib
 
 
 def resolve_remote_path(sftp, path: str) -> str:
@@ -52,10 +53,17 @@ def upload_directory_via_ssh(
     key_path: Optional[str] = None,
     password: Optional[str] = None,
     exclude_dirs: Optional[Set[str]] = None,
+    strict_host_key_checking: bool = False,
+    post_exec_cmd: Optional[str] = None,
+    on_post_exec=None,
 ):
     """
     Uploads a local directory to a remote server via SSH by compressing it and extracting it remotely.
     Cross-platform compatible.
+
+    If `post_exec_cmd` is provided, it is executed over the same SSH connection after a successful
+    extract/cleanup (and before the connection is closed). `on_post_exec(stdout, stderr, exit_status)`
+    is an optional callback that receives the command's streams and exit status for custom reporting.
     """
     exclude_dirs = exclude_dirs or set()
     local_path = Path(local_path).resolve()
@@ -63,7 +71,12 @@ def upload_directory_via_ssh(
 
     print(f"🔐 Connecting to {remote_user}@{remote_host}:{port} ...")
     ssh = paramiko.SSHClient()
-    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+    if strict_host_key_checking:
+        ssh.load_system_host_keys()
+        ssh.set_missing_host_key_policy(paramiko.RejectPolicy())
+    else:
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
     if key_path:
         key_path = os.path.expanduser(key_path)
@@ -99,8 +112,21 @@ def upload_directory_via_ssh(
         ssh.exec_command(f"rm -f {remote_archive}")
         print(f"✅ Remote cleanup complete.")
 
+        # Step 5: Optionally run a post-upload command on the remote host
+        if post_exec_cmd:
+            print(f"⚙️  Running post-upload command: {post_exec_cmd}")
+            stdin, stdout, stderr = ssh.exec_command(post_exec_cmd)
+            exit_status = stdout.channel.recv_exit_status()
+            out_text = stdout.read().decode()
+            err_text = stderr.read().decode()
+            if on_post_exec:
+                on_post_exec(out_text, err_text, exit_status)
+            elif exit_status != 0:
+                raise RuntimeError(err_text or f"Post-upload command failed with exit status {exit_status}")
+            print(f"✅ Post-upload command complete.")
+
     finally:
-        # Step 5: Clean up local archive
+        # Step 6: Clean up local archive
         print(f"🧼 Removing temporary local archive ...")
         if archive_path.exists():
             archive_path.unlink()
