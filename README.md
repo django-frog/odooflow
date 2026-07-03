@@ -15,7 +15,7 @@
 
 ---
 
-## 📦 Installation
+## 📦 Installation & first-run setup
 
 ```bash
 git clone https://github.com/anomalyco/odooflow-cli.git
@@ -35,6 +35,29 @@ Install from PyPI (once published):
 pip install odooflow-cli
 ```
 
+### First-run wizard
+
+After installing, configure odooflow with your GitLab access token:
+
+```bash
+odooflow setup
+```
+
+The wizard writes `~/.odooflowrc` (with `chmod 600` permissions), prompting for:
+
+1. **GitLab access token** — kept private in the rc file; typed input is masked.
+2. **GitLab URL** — defaults to the bundled one, override for self-hosted.
+3. **Core modules** — comma-separated list, used to skip framework deps.
+
+If you don't have a token yet, create one at *GitLab → Preferences → Access Tokens* with scopes `api`, `read_api`, and `write_repository`.
+
+Prefer environment variables? You can skip the rc entirely:
+
+```bash
+export ODOOFLOW_ACCESS_TOKEN=glpat-xxxxxxxxxxxxxxxxxxxx
+  odooflow clone <your-module-url>
+```
+
 ---
 
 ## 🛠️ Usage
@@ -47,6 +70,7 @@ odooflow --help
 
 ### Available Commands:
 
+- **`setup`**: Interactive wizard for first-run configuration (`~/.odooflowrc`).
 - **`init`**: Initialize the Odoo module environment file and sync metadata with manifest
 - **`sync-env`**: Sync the environment file from manifest
 - **`config`**: Update or show OdooFlow CLI configuration

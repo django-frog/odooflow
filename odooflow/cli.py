@@ -8,8 +8,14 @@ from odooflow.commands.clone_module import clone_module_command
 from odooflow.commands.remote import remote as remote_command
 from odooflow.commands.keygen import generate_ssh_key as keygen_command
 from odooflow.commands.push import push_command
+from odooflow.commands.setup import setup as setup_command
 
 app = typer.Typer(help="OdooFlow CLI — streamline your Odoo development workflow.")
+
+@app.command(name="setup")
+def setup_cmd():
+    """Interactive wizard: write ~/.odooflowrc with token, GitLab URL, core modules."""
+    setup_command()
 
 @app.command(name="init")
 def init_manifest(
@@ -51,12 +57,15 @@ def config(
 def clone_command(
     repo_url: str = typer.Argument(..., help="HTTP URL of the module repository."),
     branch: Optional[str] = typer.Option(None, "--branch", '-b', help="Branch to clone"),
-    depth: int = typer.Option(1, "--depth", "-d", help="Max dependency depth to clone. 1 clones only the target module, 2 clones target + immediate dependencies, etc.")
+    depth: int = typer.Option(1, "--depth", "-d", help="Max dependency depth to clone. 1 = target only, 2 = target + immediate deps, etc."),
+    workers: int = typer.Option(4, "--workers", "-w", help="Max concurrent clones (1-8)."),
 ):
     """
-    Clone a module and its dependencies from a git repository.
+    Clone a module and (optionally) its dependencies from a Git repository.
+
+    Run `odooflow setup` first if you have not configured an access token yet.
     """
-    clone_module_command(repo_url, branch, depth)
+    clone_module_command(repo_url, branch, depth, workers)
 
 
 @app.command()
