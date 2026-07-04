@@ -33,7 +33,11 @@ def get_gitignore_exclusions(base_path: Path):
 
 
 
-def push_command(remote_only: bool = False, exec_cmd: Optional[str] = None):
+def push_command(
+    server_name: Optional[str] = None,
+    remote_only: bool = False,
+    exec_cmd: Optional[str] = None,
+):
     cwd = Path.cwd()
 
     # Load config and env
@@ -83,15 +87,28 @@ def push_command(remote_only: bool = False, exec_cmd: Optional[str] = None):
     else:
         typer.secho("📦 Skipping Git push (remote only mode).", fg="yellow")
 
-    # Upload to server
-    server = remote_config.get("server")
+    # Resolve the active server profile (named or legacy single).
+    from odooflow.utils import server_profile as _sp
+    active_name, server = _sp.select_profile(env, requested_name=server_name)
+    if active_name:
+        typer.secho(f"📡 Using server profile '{active_name}'.", fg="cyan")
+
     if not server:
         typer.secho("⚠️  No server config found for this module. Skipping upload.", fg="yellow")
         raise typer.Exit(0)
 
     required_keys = ["host", "user", "directory"]
     if not all(k in server for k in required_keys):
-        typer.secho(f"❌ Incomplete server config. Required keys: {', '.join(required_keys)}", fg="red")
+        typer.secho(
+            f"❌ Incomplete server config. Required keys: {', '.join(required_keys)}",
+            fg="red",
+        )
+        typer.secho(
+            "  Tip: run `odooflow server show"
+            + (f' {active_name}' if active_name else '')
+            + "` or `odooflow server add <name>` to fix it.",
+            fg="cyan",
+        )
         raise typer.Exit(1)
 
     key_path = server.get("key") or server.get("key_path")

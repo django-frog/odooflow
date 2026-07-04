@@ -170,17 +170,35 @@ def remote(
             for key in invalid_keys:
                 server_config.pop(key)
 
-        env.setdefault("remotes", {})
-        if "server" in env["remotes"]:
-            typer.secho("⚠️  Remote server already configured.", fg="yellow")
-            if typer.confirm("Overwrite the existing server connection info?"):
-                env["remotes"]["server"] = server_config
-                updated = True
-        else:
-            env["remotes"]["server"] = server_config
-            updated = True
+        # New flow: write into `remotes.servers.default` (named profile) and
+        # mark it as the default. Backward-compatible: if a single-server
+        # legacy `server` existed and is being upgraded, save_profile()
+        # migrates it automatically.
+        from odooflow.utils import server_profile as _sp
 
-        typer.secho("🌐 Server connection info saved.", fg="green")
+        env.setdefault("remotes", {})
+        servers = env["remotes"].get(_sp.NEW_KEY, {}) if isinstance(
+            env["remotes"].get(_sp.NEW_KEY), dict
+        ) else {}
+        legacy_server = env["remotes"].get(_sp.LEGACY_KEY)
+
+        if servers or legacy_server is not None:
+            typer.secho("⚠️  A server profile is already configured.", fg="yellow")
+            if not typer.confirm("Overwrite the existing server profile 'default'?"):
+                typer.secho("❌ Skipped updating server.", fg="red")
+            else:
+                env, _ = _sp.save_profile(env_path, env, _sp.DEFAULT_PROFILE_NAME, server_config)
+                env = _sp.set_default(env_path, env, _sp.DEFAULT_PROFILE_NAME)
+                updated = True
+                typer.secho("🌐 Server profile 'default' updated.", fg="green")
+        else:
+            env, _ = _sp.save_profile(env_path, env, _sp.DEFAULT_PROFILE_NAME, server_config)
+            env = _sp.set_default(env_path, env, _sp.DEFAULT_PROFILE_NAME)
+            updated = True
+            typer.secho(
+                "🌐 Server profile 'default' saved (use `odooflow server list` to see it).",
+                fg="green",
+            )
 
     if updated:
         write_env_file(env_path, env)
