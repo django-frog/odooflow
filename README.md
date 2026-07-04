@@ -9,6 +9,7 @@
 - Smart skip of Odoo core modules
 - Branch selection for cloning
 - Post-push command execution on the remote server
+- **Named server profiles** (staging/QA/prod) with first-class `odooflow server list|add|show|use|remove|test`
 - Built-in SSH key generation
 - Helpful and colorful CLI output
 - Built using [Typer](https://typer.tiangolo.com/) and Python 3.7+
@@ -76,6 +77,7 @@ odooflow --help
 - **`config`**: Update or show OdooFlow CLI configuration
 - **`clone`**: Clone a module and its dependencies from a git repository
 - **`remote`**: Manage remote connections for Git and deployment server
+- **`server`**: Manage named server profiles (staging/QA/prod) — `list`, `add`, `show`, `use`, `remove`, `test`
 - **`ssh-keygen`**: Generate a secure SSH key pair
 - **`push`**: Push the current Git branch and upload the project to the test server
 
@@ -89,10 +91,23 @@ odooflow --help
 
 ### Push Command Options:
 
-| Flag            | Description                                                                 |
-|-----------------|-----------------------------------------------------------------------------|
-| `--remote-only` | Skip Git push and only upload to server                                     |
-| `--exec`        | Custom shell command to execute on the server after pushing                 |
+| Flag            | Description                                                                                              |
+|-----------------|----------------------------------------------------------------------------------------------------------|
+| `--server`/`-s` | Named server profile from `odooflow server list` (defaults to the configured default).                  |
+| `--remote-only` | Skip Git push and only upload to server                                                                  |
+| `--exec`        | Custom shell command to execute on the server after pushing                                              |
+
+### Server Profile Commands:
+
+| Command                              | What it does                                          |
+|--------------------------------------|-------------------------------------------------------|
+| `odooflow server list`               | Tabular view of every configured profile.            |
+| `odooflow server list --json`        | Machine-readable output (passwords omitted).         |
+| `odooflow server add <name>`         | Interactive wizard (or `--host`, `--user`, `--key-path` for non-interactive). Validates inputs and tests SSH on save. |
+| `odooflow server show [<name>]`      | Show fields of a profile. Default = the current default. Passwords are masked unless `--reveal-password`. |
+| `odooflow server use <name>`         | Set the default profile used by `odooflow push`.     |
+| `odooflow server remove <name>`      | Delete a profile (the default reverts to another if any are left). |
+| `odooflow server test [<name>]`      | Verify TCP reachability, SSH auth, and directory existence without uploading anything. |
 
 ### 🔍 Examples:
 
@@ -138,6 +153,42 @@ Skip Git push, only upload to server:
 odooflow push --remote-only
 ```
 
+Push to a specific server (when you have several profiles):
+
+```bash
+odooflow push --server staging
+odooflow push --server prod --remote-only --exec 'sudo systemctl restart odoo-prod'
+```
+
+### 📡 Server profiles — a faster flow for `staging` / `qa` / `prod`
+
+Add as many named profiles as you want. The first one you create is the default for `odooflow push`:
+
+```bash
+# Interactive wizard — validates every field and tests SSH before saving.
+odooflow server add staging
+
+# Non-interactive / scriptable:
+odooflow server add qa \
+  --host 10.0.0.5 --port 22 --user deploy \
+  --directory /opt/odoo/qa --key-path ~/.ssh/odooflow_rsa
+
+# Review what you have:
+odooflow server list
+odooflow server show staging        # password is masked; --reveal-password to see it
+
+# Switch the default:
+odooflow server use prod
+
+# Verify connectivity without uploading:
+odooflow server test staging
+
+# Reorder / remove:
+odooflow server remove qa
+```
+
+Existing single-server configs are auto-migrated into a `default` profile on first `odooflow server add`, so nothing you've already configured is lost.
+
 ---
 
 ## 📁 Project Structure
@@ -156,9 +207,11 @@ odooflow/
 │   │   ├── keygen.py
 │   │   ├── push.py
 │   │   ├── remote.py
+│   │   ├── server.py
 │   │   └── sync_env.py
 │   └── utils/
 │       ├── env.py
+│       ├── server_profile.py
 │       └── ssh.py
 ├── tests/
 ├── README.md

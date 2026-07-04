@@ -9,8 +9,10 @@ from odooflow.commands.remote import remote as remote_command
 from odooflow.commands.keygen import generate_ssh_key as keygen_command
 from odooflow.commands.push import push_command
 from odooflow.commands.setup import setup as setup_command
+from odooflow.commands.server import app as server_app
 
 app = typer.Typer(help="OdooFlow CLI — streamline your Odoo development workflow.")
+app.add_typer(server_app, name="server")
 
 @app.command(name="setup")
 def setup_cmd():
@@ -97,13 +99,14 @@ def generate_ssh_key(
 
 @app.command()
 def push(
+    server: Optional[str] = typer.Option(None, "--server", "-s", help="Named server profile from `odooflow server list`."),
     remote_only: bool = typer.Option(False, "--remote-only", help="Skip Git push and only upload to server"),
     exec_cmd: Optional[str] = typer.Option(None, "--exec", help="Custom shell command to execute on the server after pushing"),
 ):
     """
     Push the current Git branch and upload the project to the test server.
     """
-    push_command(remote_only=remote_only, exec_cmd=exec_cmd)
+    push_command(server_name=server, remote_only=remote_only, exec_cmd=exec_cmd)
 
 
 
