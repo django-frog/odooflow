@@ -161,7 +161,9 @@ def remote(
             )
             raise typer.Exit(code=1)
 
-        invalid_keys = [key for key in server_config if key not in ALLOWED_SERVER_KEYS]
+        invalid_keys = [
+            key for key in server_config if key not in ALLOWED_SERVER_KEYS
+        ]
         if invalid_keys:
             typer.secho(
                 f"⚠️  Ignoring unknown keys: {', '.join(invalid_keys)}",
@@ -187,18 +189,19 @@ def remote(
             if not typer.confirm("Overwrite the existing server profile 'default'?"):
                 typer.secho("❌ Skipped updating server.", fg="red")
             else:
-                env, _ = _sp.save_profile(env_path, env, _sp.DEFAULT_PROFILE_NAME, server_config)
-                env = _sp.set_default(env_path, env, _sp.DEFAULT_PROFILE_NAME)
-                updated = True
-                typer.secho("🌐 Server profile 'default' updated.", fg="green")
+                env = _persist_profile(env_path, env, server_config)
+                if env is not None:
+                    updated = True
+                    typer.secho("🌐 Server profile 'default' updated.", fg="green")
         else:
-            env, _ = _sp.save_profile(env_path, env, _sp.DEFAULT_PROFILE_NAME, server_config)
-            env = _sp.set_default(env_path, env, _sp.DEFAULT_PROFILE_NAME)
-            updated = True
-            typer.secho(
-                "🌐 Server profile 'default' saved (use `odooflow server list` to see it).",
-                fg="green",
-            )
+            env = _persist_profile(env_path, env, server_config)
+            if env is not None:
+                updated = True
+                typer.secho(
+                    "🌐 Server profile 'default' saved "
+                    "(use `odooflow server list` to see it).",
+                    fg="green",
+                )
 
     if updated:
         write_env_file(env_path, env)
@@ -208,3 +211,28 @@ def remote(
             "ℹ️  No options provided. Run `odooflow remote --help` to see flags.",
             fg="yellow",
         )
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+
+def _persist_profile(env_path: Path, env: dict, profile: dict) -> dict | None:
+    """
+    Save `profile` under `remotes.servers.default` and set it as default.
+    Returns the updated env on success, or None if validation failed
+    (an error has already been emitted to the user).
+    """
+    from odooflow.utils import server_profile as _sp
+
+    try:
+        env, _ = _sp.save_profile(
+            env_path, env, _sp.DEFAULT_PROFILE_NAME, profile
+        )
+        env = _sp.set_default(env_path, env, _sp.DEFAULT_PROFILE_NAME)
+    except errors.ConfigError as exc:
+        # Structured, no raw traceback. Same shape server add emits.
+        errors._safe_exit(exc)
+        return None
+    return env

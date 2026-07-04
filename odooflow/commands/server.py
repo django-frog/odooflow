@@ -157,50 +157,81 @@ def add(
     make_default: bool = typer.Option(
         True, "--default/--no-default", help="Set this profile as the default."
     ),
+    no_validate: bool = typer.Option(
+        False,
+        "--no-validate",
+        help=(
+            "Skip on-disk preflight (key file existence) and auth-method prompt. "
+            "Use only in CI/automation."
+        ),
+    ),
 ):
     """
     Add or update a server profile. Interactive when flags are missing.
+
+    All required fields are validated before saving. In interactive mode
+    the wizard loops until each prompt is satisfied (e.g. auth method
+    must be 'key' or 'password', key path must exist on disk).
     """
     env, env_path = _load_env()
 
-    # Interactive fallback for any missing required field.
+    # ------------------------------------------------------------------ #
+    # Interactive collection with loop-until-valid prompts.
+    # ------------------------------------------------------------------ #
     if not host:
-        host = typer.prompt("Host (e.g. 10.0.0.5)", default="")
+        host = _prompt_until(
+            "Host (e.g. 10.0.0.5)",
+            default="",
+            validator=_validate_host_strict,
+            error_msg=(
+                "  Host cannot contain a scheme prefix; use a bare hostname or IP."
+            ),
+        )
     if not user:
-        user = typer.prompt("SSH user", default=getpass.getuser())
+        user = _prompt_until(
+            "SSH user",
+            default=getpass.getuser(),
+            validator=lambda v: bool(v.strip()),
+            error_msg="  SSH user cannot be empty.",
+        )
     if not directory:
         directory = typer.prompt(
             "Remote directory (absolute path)", default="/opt/odoo"
         )
     if port is None:
-        port = typer.prompt("Port", default="22")
-        try:
-            port = int(port)
-        except ValueError:
-            errors._emit(
-                f"'port' must be an integer (got '{port}').",
-                ["  Re-run with `--port <number>` or enter a number at the prompt."],
-            )
-            raise typer.Exit(code=1)
+        port = _prompt_port(default=22)
 
+    # Auth method (loop until user types 'key' or 'password').
     if not key_path and password is None:
-        choice = typer.prompt(
-            "Auth method — type 'key' or 'password'",
-            default="key",
-        ).strip().lower()
-        if choice.startswith("p"):
-            password = typer.prompt(
-                "Password (input hidden)", hide_input=True, default=""
-            )
+        choice = _prompt_auth_method()
+        if choice == "password":
+            password = _prompt_password()
         else:
-            key_path = typer.prompt(
-                "Path to SSH private key",
-                default=str(Path.home() / ".ssh" / "id_rsa"),
-            )
+            key_path = _prompt_key_path(no_validate=no_validate)
 
+    # If user only supplied --key-path (no auth prompt yet), still verify it
+    # unless --no-validate was given.
+    if key_path and not password and not no_validate:
+        while not Path(key_path).expanduser().exists():
+            errors._emit(
+                f"  SSH key not found at {Path(key_path).expanduser()}.",
+                [
+                    "",
+                    "  Fix it:",
+                    "    * Enter an existing file path",
+                    "    * Run `odooflow ssh-keygen` first to generate one",
+                    "    * Or pass `--no-validate` to skip this check (CI-only)",
+                ],
+            )
+            typer.secho("")
+            key_path = _prompt_key_path(no_validate=True)
+
+    # ------------------------------------------------------------------ #
+    # Build the profile dict and persist.
+    # ------------------------------------------------------------------ #
     profile = {
         "host": host,
-        "port": port,
+        "port": int(port),
         "user": user,
         "directory": directory,
     }
@@ -211,10 +242,30 @@ def add(
     if post_push_cmd:
         profile["post_push_cmd"] = post_push_cmd
 
-    new_env, migrated = server_profile.save_profile(env_path, env, name, profile)
+    # ------------------------------------------------------------------ #
+    # Save, with structured error path (no traceback for validation).
+    # ------------------------------------------------------------------ #
+    try:
+        new_env, migrated = server_profile.save_profile(
+            env_path, env, name, profile
+        )
+    except errors.ConfigError as exc:
+        # Same structured output we use elsewhere; no raw traceback.
+        errors._safe_exit(exc)
 
     if make_default:
-        server_profile.set_default(env_path, new_env, name)
+        try:
+            new_env = server_profile.set_default(env_path, new_env, name)
+        except OSError as exc:
+            errors._emit(
+                f"  Profile saved, but persisting default failed: {exc}",
+                [
+                    "  Fix it:",
+                    "    * Check write permissions on the env file's parent dir.",
+                    "    * Re-run `odooflow server use <name>` after fixing.",
+                ],
+            )
+            raise typer.Exit(code=1)
         typer.secho(f"  ✓ '{name}' saved and set as default.", fg="green")
     else:
         typer.secho(f"  ✓ '{name}' saved.", fg="green")
@@ -228,6 +279,113 @@ def add(
         f"  Tip: run `odooflow server test {name}` to verify SSH connectivity.",
         fg="cyan",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Interactive prompt helpers (loop-until-valid)
+# --------------------------------------------------------------------------- #
+
+
+def _prompt_until(
+    label: str,
+    default: str,
+    validator,
+    error_msg: str,
+) -> str:
+    """Loop typer.prompt until `validator(value)` returns True."""
+    while True:
+        value = typer.prompt(label, default=default)
+        if validator(value):
+            return value.strip() if isinstance(value, str) else value
+        typer.secho(error_msg, fg="red", err=True)
+
+
+def _validate_host_strict(host: str) -> bool:
+    if not host:
+        return False
+    return "://" not in host
+
+
+def _prompt_port(default: int = 22) -> int:
+    """Loop until the user enters an integer 1-65535."""
+    while True:
+        raw = typer.prompt("Port", default=str(default))
+        try:
+            port = int(raw)
+        except ValueError:
+            typer.secho(
+                f"  Port must be a number between 1 and 65535 (got '{raw}').",
+                fg="red",
+                err=True,
+            )
+            continue
+        if not (1 <= port <= 65535):
+            typer.secho(
+                f"  Port must be between 1 and 65535 (got {port}).",
+                fg="red",
+                err=True,
+            )
+            continue
+        return port
+
+
+def _prompt_auth_method() -> str:
+    """Loop until the user types 'key' or 'password' (case-insensitive prefix)."""
+    while True:
+        choice = (
+            typer.prompt(
+                "Auth method — type 'key' or 'password'",
+                default="key",
+            )
+            .strip()
+            .lower()
+        )
+        if choice.startswith("p"):
+            return "password"
+        if choice.startswith("k"):
+            return "key"
+        typer.secho(
+            "  Please type 'key' or 'password' (e.g. 'k' / 'p').",
+            fg="red",
+            err=True,
+        )
+
+
+def _prompt_password() -> str:
+    """Loop until the user enters a non-empty password."""
+    while True:
+        pw = typer.prompt(
+            "Password (input hidden)", hide_input=True, default=""
+        )
+        if pw:
+            return pw
+        typer.secho(
+            "  Password cannot be empty. Re-enter or press Ctrl-C to abort.",
+            fg="red",
+            err=True,
+        )
+
+
+def _prompt_key_path(no_validate: bool) -> str:
+    """Prompt for an SSH key path. With no_validate=False, loops until file exists."""
+    while True:
+        path_str = typer.prompt(
+            "Path to SSH private key",
+            default=str(Path.home() / ".ssh" / "id_rsa"),
+        )
+        expanded = Path(path_str).expanduser()
+        if no_validate or expanded.exists():
+            return str(expanded)
+        typer.secho(
+            f"  SSH key not found at {expanded}.",
+            fg="red",
+            err=True,
+        )
+        typer.secho(
+            "  Choose again, run `odooflow ssh-keygen`, or pass --no-validate.\n",
+            fg="red",
+            err=True,
+        )
 
 
 @app.command()
