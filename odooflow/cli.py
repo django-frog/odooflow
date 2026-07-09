@@ -10,9 +10,11 @@ from odooflow.commands.keygen import generate_ssh_key as keygen_command
 from odooflow.commands.push import push_command
 from odooflow.commands.setup import setup as setup_command
 from odooflow.commands.server import app as server_app
+from odooflow.commands.connect import connect as server_connect
 
 app = typer.Typer(help="OdooFlow CLI — streamline your Odoo development workflow.")
 app.add_typer(server_app, name="server")
+server_app.command("connect")(server_connect)
 
 @app.command(name="setup")
 def setup_cmd():
