@@ -77,7 +77,7 @@ odooflow --help
 - **`config`**: Update or show OdooFlow CLI configuration
 - **`clone`**: Clone a module and its dependencies from a git repository
 - **`remote`**: Manage remote connections for Git and deployment server
-- **`server`**: Manage named server profiles (staging/QA/prod) — `list`, `add`, `show`, `use`, `remove`, `test`
+- **`server`**: Manage named server profiles (staging/QA/prod) — `list`, `add`, `show`, `use`, `remove`, `test`, `connect`
 - **`ssh-keygen`**: Generate a secure SSH key pair
 - **`push`**: Push the current Git branch and upload the project to the test server
 
@@ -108,6 +108,7 @@ odooflow --help
 | `odooflow server use <name>`         | Set the default profile used by `odooflow push`.     |
 | `odooflow server remove <name>`      | Delete a profile (the default reverts to another if any are left). |
 | `odooflow server test [<name>]`      | Verify TCP reachability, SSH auth, and directory existence without uploading anything. |
+| `odooflow server connect [<name>]`   | Open an interactive SSH shell against a profile, with color-coded prompts, live stdout/stderr, in-memory command history, and auto-reconnect on session drop. |
 
 ### 🔍 Examples:
 
