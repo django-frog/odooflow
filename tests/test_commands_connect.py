@@ -564,3 +564,95 @@ class TestLineEditorReadsChars:
         rc = shell.run()
         assert rc == 0
         assert list(shell.history)[-1] == "echo café"
+
+
+# --------------------------------------------------------------------------- #
+# Regression test for the 0.3.2 user bug: VMIN=0 + VTIME=1 caused
+# spurious EOF whenever the user paused for >100ms mid-typing. The
+# fix is VMIN=1, VTIME=0 (blocking until at least one byte arrives).
+# --------------------------------------------------------------------------- #
+
+
+class TestTTYSetupRegression:
+    def _make_shell_with_fake_fd(self):
+        """
+        Build a shell whose _read_byte reads from a fake fd that we
+        control. The fd is just a number; we shim os.read to read from
+        a bytes queue.
+        """
+        pre = {
+            "host": "h", "port": 22, "user": "u", "directory": "/",
+            "key_path": None, "password": "pw",
+        }
+        client = MagicMock()
+        client.exec_command.side_effect = lambda *a, **kw: (
+            MagicMock(),
+            MagicMock(read=lambda: b"", channel=MagicMock(recv_exit_status=lambda: 0)),
+            MagicMock(read=lambda: b""),
+        )
+        client.close = MagicMock()
+        from odooflow.commands.connect import InteractiveShell
+
+        shell = InteractiveShell(
+            client_factory=lambda: client, pre=pre, console=MagicMock()
+        )
+        shell._is_tty = True
+        shell._stdin_fd = 42  # fake
+        shell._test_client = client
+        return shell
+
+    def test_setup_tty_sets_vmin_to_one_not_zero(self):
+        """VMIN=0 was the actual bug at 0.3.2 — it caused spurious EOF."""
+        import termios as _t
+
+        shell = self._make_shell_with_fake_fd()
+        captured = {}
+
+        # Replace stdin.fileno() with a stub returning our fake fd.
+        fake_stdin = MagicMock()
+        fake_stdin.fileno.return_value = 42
+        shell._stdin = fake_stdin
+
+        # Capture the termios struct passed to tcsetattr.
+        def fake_getattr(fd):
+            return [0, 0, 0, 0, 0, 0, [0, 0, 0, 0, 0, 0, 0]]
+
+        def fake_setattr(fd, when, new_attrs):
+            captured["attrs"] = new_attrs
+
+        with patch("odooflow.commands.connect.termios.tcgetattr", fake_getattr):
+            with patch("odooflow.commands.connect.termios.tcsetattr", fake_setattr):
+                with patch("odooflow.commands.connect.termios.TCSANOW", _t.TCSANOW):
+                    shell._setup_tty()
+
+        new_attrs = captured["attrs"]
+        assert new_attrs is not None, "tcsetattr was never called"
+        vmin = new_attrs[6][_t.VMIN]
+        vtime = new_attrs[6][_t.VTIME]
+        assert vmin == 1, f"VMIN must be 1 (blocking), got {vmin}"
+        assert vtime == 0, f"VTIME must be 0 (no timeout), got {vtime}"
+
+    def test_read_byte_returns_decoded_str_under_fake_fd(self):
+        """When stdin_fd is set, _read_byte should still return a str."""
+        from unittest.mock import patch as _p
+
+        shell = self._make_shell_with_fake_fd()
+
+        # Stub os.read to return bytes one at a time.
+        queue = [b"l", b"s", b"\n"]
+
+        def fake_os_read(fd, n):
+            if queue:
+                return queue.pop(0)
+            return b""
+
+        with _p("odooflow.commands.connect.os.read", fake_os_read):
+            ch1 = shell._read_byte()
+            ch2 = shell._read_byte()
+            ch3 = shell._read_byte()
+            ch4 = shell._read_byte()
+
+        assert ch1 == "l"
+        assert ch2 == "s"
+        assert ch3 == "\n"
+        assert ch4 is None  # b'' => EOF

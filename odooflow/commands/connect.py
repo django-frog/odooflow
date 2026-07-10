@@ -223,13 +223,27 @@ class InteractiveShell:
 
     def _setup_tty(self) -> None:
         """
-        Disable echo on the controlling terminal so our hand-drawn prompt
-        does not double up with the kernel's echo. We deliberately do
-        NOT use `tty.setraw`: we read bytes via `os.read(fd, 1)`, which
-        bypasses canonicalisation regardless of whether the terminal is
-        in cooked or raw mode. That way a single code path works on
-        every environment, including ones where `tty.setraw` would
-        silently fail (no controlling terminal, odd TERM, etc.).
+        Put stdin in a state where our line editor can read one byte at a
+        time without canonical-mode line buffering or kernel echo:
+
+          * Disable ECHO      — we draw the typed chars ourselves via
+                                rich.Console, so kernel echo would
+                                duplicate them.
+          * Disable ICANON    — turns off line buffering so 'os.read'
+                                returns immediately with whatever the
+                                user typed, not after Enter.
+          * Set VMIN=1, VTIME=0 — block until at least one byte arrives.
+                                (The earlier VMIN=0 + VTIME=1 caused
+                                spurious EOF when the user paused
+                                mid-typing; that's the bug the user
+                                hit at 0.3.2.)
+          * Leave ISIG on     — so Ctrl-C and Ctrl-D still work as
+                                expected.
+
+        Crucially we do NOT call `tty.setraw`; we only flip the bits we
+        need. That way the kernel still does line-discipline things
+        like ISIG/IXON, and our terminal restoration in _restore_tty
+        restores the original attrs verbatim.
         """
         if not self._is_tty:
             self._stdin_fd = None
@@ -239,14 +253,15 @@ class InteractiveShell:
             self._stdin_fd = fd
             attrs = termios.tcgetattr(fd)
             self._old_term_attrs = attrs
-            # Disable echo and canonical-mode line editing; leave signals
-            # (ISIG) on so Ctrl-C still works as expected.
+            # lflags[3]: ECHO | ICANON. Clear both. Leave ISIG (0x01) on
+            # so Ctrl-C generates SIGINT and Ctrl-D produces EOF.
             new_attrs = list(attrs)
             new_attrs[3] = (new_attrs[3] & ~termios.ECHO) & ~termios.ICANON
-            # VMIN=0 + VTIME=1: read with a small timeout so a stalled
-            # remote does not freeze the shell.
-            new_attrs[6][termios.VMIN] = 0
-            new_attrs[6][termios.VTIME] = 1
+            # cc[6]: VMIN=1 (block until at least one byte is ready),
+            # VTIME=0 (no timeout). This is the canonical 'blocking
+            # mode' and avoids the false-EOF on idle that VMIN=0 caused.
+            new_attrs[6][termios.VMIN] = 1
+            new_attrs[6][termios.VTIME] = 0
             termios.tcsetattr(fd, termios.TCSANOW, new_attrs)
         except (termios.error, OSError, ValueError, AttributeError):
             self._stdin_fd = None
@@ -282,36 +297,60 @@ class InteractiveShell:
     # ---------- line editor ---------- #
 
     def _render(self, buf: list[str], cursor: int) -> None:
-        """Re-render the current line under the prompt."""
+        """Re-render the current line under the prompt. Always flush."""
         self._draw_prompt()
         if buf:
             self._console.print("".join(buf), end="", highlight=False)
         back = len(buf) - cursor
         if back > 0:
             self._console.print("\b" * back, end="", highlight=False)
+        # Without this flush, the prompt + typed chars may be buffered
+        # by Python's stdout until something else (e.g. the kernel
+        # re-echo or a later print) flushes them — which on slow PTYs
+        # looks like the shell isn't responding. Force the flush.
+        try:
+            self._console.file.flush()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _read_byte(self) -> Optional[str]:
         """
-        Read one byte from stdin. Returns None on EOF.
+        Read one character from stdin. Returns None on EOF.
 
-        On a real terminal: bypasses canonical mode by reading directly
-        from the file descriptor with `os.read(fd, 1)`. The terminal
-        is still in cooked mode for everything else (other processes,
-        shell signals), but our line editor receives characters as they
-        are typed — no buffering, no per-line waits.
+        On a real terminal we read directly from the file descriptor with
+        `os.read(fd, 1)`. With `VMIN=1, VTIME=0` set by `_setup_tty`,
+        `os.read` blocks until at least one byte arrives, then returns
+        exactly one `bytes` object — no line buffering, no kernel echo.
+
+        On a non-TTY (pipe, CliRunner), we use the high-level
+        `sys.stdin.read(1)` which returns a `str`.
+
+        The return value is always a 1-character `str` (decoded with
+        `errors="replace"` so a stray binary byte won't crash the
+        shell).
         """
         if self._stdin_fd is not None:
             try:
                 chunk = os.read(self._stdin_fd, 1)
             except (OSError, ValueError):
-                chunk = self._stdin.read(1)  # type: ignore[assignment]
-            return chunk or None
-        # Non-TTY fallback: read one char via the high-level API.
+                chunk = self._stdin.read(1) if hasattr(self._stdin, "read") else ""
+                if not chunk:
+                    return None
+                return chunk
+            if not chunk:
+                return None  # EOF on a real fd.
+            try:
+                return chunk.decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                return None
+        # Non-TTY fallback.
         try:
             ch = self._stdin.read(1)
         except (EOFError, KeyboardInterrupt):
             return None
-        return ch or None
+        if not ch:
+            return None
+        return ch
 
     def _read_line(self) -> Optional[str]:
         """
