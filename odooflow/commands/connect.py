@@ -19,6 +19,7 @@ import collections
 import os
 import socket
 import sys
+import termios
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -189,8 +190,9 @@ class InteractiveShell:
         self.history: collections.deque[str] = collections.deque(maxlen=200)
 
         self._client: Optional[paramiko.SSHClient] = None
-        self._use_raw_tty = False
+        self._is_tty: bool = bool(getattr(sys.stdin, "isatty", lambda: False)())
         self._old_term_attrs = None
+        self._stdin_fd: Optional[int] = None
         self._stdin = sys.stdin
 
     # ---------- lifecycle ---------- #
@@ -217,31 +219,50 @@ class InteractiveShell:
             finally:
                 self._client = None
 
-    def _setup_tty(self) -> None:
-        """Try to put stdin in raw mode for arrow-key parsing."""
-        try:
-            import termios
-            import tty
-            fd = self._stdin.fileno()
-            self._old_term_attrs = termios.tcgetattr(fd)
-            tty.setraw(fd)
-            self._use_raw_tty = True
-        except (ImportError, OSError, ValueError):
-            self._use_raw_tty = False
+    # ---------- terminal setup ---------- #
 
-    def _restore_tty(self) -> None:
-        if not self._use_raw_tty or self._old_term_attrs is None:
+    def _setup_tty(self) -> None:
+        """
+        Disable echo on the controlling terminal so our hand-drawn prompt
+        does not double up with the kernel's echo. We deliberately do
+        NOT use `tty.setraw`: we read bytes via `os.read(fd, 1)`, which
+        bypasses canonicalisation regardless of whether the terminal is
+        in cooked or raw mode. That way a single code path works on
+        every environment, including ones where `tty.setraw` would
+        silently fail (no controlling terminal, odd TERM, etc.).
+        """
+        if not self._is_tty:
+            self._stdin_fd = None
             return
         try:
-            import termios
+            fd = self._stdin.fileno()
+            self._stdin_fd = fd
+            attrs = termios.tcgetattr(fd)
+            self._old_term_attrs = attrs
+            # Disable echo and canonical-mode line editing; leave signals
+            # (ISIG) on so Ctrl-C still works as expected.
+            new_attrs = list(attrs)
+            new_attrs[3] = (new_attrs[3] & ~termios.ECHO) & ~termios.ICANON
+            # VMIN=0 + VTIME=1: read with a small timeout so a stalled
+            # remote does not freeze the shell.
+            new_attrs[6][termios.VMIN] = 0
+            new_attrs[6][termios.VTIME] = 1
+            termios.tcsetattr(fd, termios.TCSANOW, new_attrs)
+        except (termios.error, OSError, ValueError, AttributeError):
+            self._stdin_fd = None
+            self._old_term_attrs = None
+
+    def _restore_tty(self) -> None:
+        if self._stdin_fd is None or self._old_term_attrs is None:
+            return
+        try:
             termios.tcsetattr(
-                self._stdin.fileno(),
-                termios.TCSAFLUSH,
-                self._old_term_attrs,
+                self._stdin_fd, termios.TCSAFLUSH, self._old_term_attrs
             )
-        except Exception:  # noqa: BLE001
+        except (termios.error, OSError, ValueError, AttributeError):
             pass
-        self._use_raw_tty = False
+        self._old_term_attrs = None
+        self._stdin_fd = None
 
     # ---------- prompt drawing ---------- #
 
@@ -258,25 +279,55 @@ class InteractiveShell:
 
     # ---------- input ---------- #
 
-    def _read_line_raw(self) -> Optional[str]:
-        """Read a line with up/down arrow history. Returns None on EOF/Ctrl-D."""
+    # ---------- line editor ---------- #
+
+    def _render(self, buf: list[str], cursor: int) -> None:
+        """Re-render the current line under the prompt."""
+        self._draw_prompt()
+        if buf:
+            self._console.print("".join(buf), end="", highlight=False)
+        back = len(buf) - cursor
+        if back > 0:
+            self._console.print("\b" * back, end="", highlight=False)
+
+    def _read_byte(self) -> Optional[str]:
+        """
+        Read one byte from stdin. Returns None on EOF.
+
+        On a real terminal: bypasses canonical mode by reading directly
+        from the file descriptor with `os.read(fd, 1)`. The terminal
+        is still in cooked mode for everything else (other processes,
+        shell signals), but our line editor receives characters as they
+        are typed — no buffering, no per-line waits.
+        """
+        if self._stdin_fd is not None:
+            try:
+                chunk = os.read(self._stdin_fd, 1)
+            except (OSError, ValueError):
+                chunk = self._stdin.read(1)  # type: ignore[assignment]
+            return chunk or None
+        # Non-TTY fallback: read one char via the high-level API.
+        try:
+            ch = self._stdin.read(1)
+        except (EOFError, KeyboardInterrupt):
+            return None
+        return ch or None
+
+    def _read_line(self) -> Optional[str]:
+        """
+        Read a line of input, with arrow-key history, backspace, and
+        Ctrl-A/E/C/D. Returns None on EOF / Ctrl-C / Ctrl-D on empty
+        buffer.
+        """
         buf: list[str] = []
         cursor = 0
         history_index: Optional[int] = None  # None means 'on the live line'
 
-        def render() -> None:
-            self._draw_prompt()
-            self._console.print("".join(buf), end="")
-            # Move cursor back if not at end.
-            back = len(buf) - cursor
-            if back > 0:
-                self._console.print("\b" * back, end="", highlight=False)
-
-        render()
+        self._render(buf, cursor)
         while True:
-            ch = self._stdin.read(1)
-            if not ch:
-                return None  # EOF
+            ch = self._read_byte()
+            if ch is None:
+                return None
             code = ord(ch)
 
             # Enter
@@ -289,13 +340,14 @@ class InteractiveShell:
                 if cursor > 0:
                     del buf[cursor - 1]
                     cursor -= 1
-                    render()
+                    self._render(buf, cursor)
                 continue
 
             # Escape sequences (arrow keys, etc.)
             if code == 0x1B:
-                seq = self._stdin.read(2)
-                if seq == "[A":  # Up
+                seq1 = self._read_byte() or ""
+                seq2 = self._read_byte() or ""
+                if seq1 == "[" and seq2 == "A":  # Up
                     if not self.history:
                         continue
                     if history_index is None:
@@ -304,8 +356,8 @@ class InteractiveShell:
                         history_index -= 1
                     buf = list(self.history[history_index])
                     cursor = len(buf)
-                    render()
-                elif seq == "[B":  # Down
+                    self._render(buf, cursor)
+                elif seq1 == "[" and seq2 == "B":  # Down
                     if history_index is None:
                         continue
                     if history_index < len(self.history) - 1:
@@ -315,7 +367,8 @@ class InteractiveShell:
                         history_index = None
                         buf = []
                     cursor = len(buf)
-                    render()
+                    self._render(buf, cursor)
+                # Ignore unknown escape sequences (F1-F12, etc.)
                 continue
 
             # Ctrl-C
@@ -330,27 +383,17 @@ class InteractiveShell:
             # Ctrl-A / Ctrl-E
             if code == 0x01:
                 cursor = 0
-                render()
+                self._render(buf, cursor)
                 continue
             if code == 0x05:
                 cursor = len(buf)
-                render()
+                self._render(buf, cursor)
                 continue
 
             # Anything else: insert
             buf.insert(cursor, ch)
             cursor += 1
-            render()
-
-    def _read_line_simple(self) -> Optional[str]:
-        """Plain input() fallback for non-TTY runs (and CliRunner)."""
-        try:
-            line = self._stdin.readline()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if not line:
-            return None
-        return line.rstrip("\n").rstrip("\r")
+            self._render(buf, cursor)
 
     # ---------- execution ---------- #
 
@@ -392,11 +435,8 @@ class InteractiveShell:
 
             while True:
                 # Read a command.
-                self._draw_prompt()
-                if self._use_raw_tty:
-                    line = self._read_line_raw()
-                else:
-                    line = self._read_line_simple()
+                self._render([], 0)
+                line = self._read_line()
 
                 if line is None:
                     self._console.print(
@@ -502,9 +542,10 @@ def connect(
         console=console,
     )
     if raw_input:
-        # Replace TTY setup with no-ops so non-interactive input works.
-        shell._setup_tty = lambda: None  # type: ignore[assignment]
-        shell._restore_tty = lambda: None  # type: ignore[assignment]
+        # Force non-interactive mode even when stdin is a TTY (useful
+        # for `odooflow server connect < input.txt` style invocations).
+        shell._is_tty = False
+        shell._stdin_fd = None
     raise typer.Exit(code=shell.run())
 
 

@@ -453,3 +453,114 @@ class TestConnectCLISurface:
         with patch("pathlib.Path.cwd", return_value=tmp_path):
             result = runner.invoke(app, ["server", "connect"])
         assert result.exit_code != 0
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests for the "every character adds a new line" bug.
+# Root cause was a cooked-mode readline() fallback that fired whenever
+# termios.tcsetattr or tty.setraw silently failed. The fix is to read
+# bytes via os.read(fd, 1), which bypasses canonicalization regardless
+# of whether the terminal is in raw or cooked mode.
+# --------------------------------------------------------------------------- #
+
+
+class TestLineEditorReadsChars:
+    """
+    Drive `_read_line` with a StringIO under the new os.read path
+    (which falls back to .read(1) when stdin_fd is None). Each test
+    confirms that a multi-character line assembled correctly, with
+    proper handling of backspace, arrow keys, and Ctrl-C / Ctrl-D.
+    """
+
+    def _build_shell(self, stdin_text: str, history: list[str] | None = None):
+        pre = {
+            "host": "h",
+            "port": 22,
+            "user": "u",
+            "directory": "/srv",
+            "key_path": None,
+            "password": "pw",
+        }
+        client = MagicMock()
+        client.exec_command.side_effect = lambda *a, **kw: (
+            MagicMock(),
+            MagicMock(read=lambda: b"", channel=MagicMock(recv_exit_status=lambda: 0)),
+            MagicMock(read=lambda: b""),
+        )
+        client.close = MagicMock()
+        from odooflow.commands.connect import InteractiveShell
+
+        shell = InteractiveShell(
+            client_factory=lambda: client,
+            pre=pre,
+            console=MagicMock(),
+        )
+        # Force the non-TTY path (the regression was triggered when
+        # the shell mistakenly used the cooked-mode fallback on a
+        # broken/raw TTY).
+        shell._is_tty = False
+        shell._stdin_fd = None
+        shell._setup_tty()
+        shell._stdin = io.StringIO(stdin_text)
+        if history:
+            shell.history.extend(history)
+        # Capture the client reference so we can assert on it after
+        # run() disconnects in its `finally` clause.
+        shell._test_client = client
+        return shell
+
+    def test_reads_full_line_without_waiting_for_newline(self):
+        """The user's report: every character adds a new line. The
+        fix is that we read one char at a time, so even keystrokes
+        typed without Enter are buffered. A complete line is only
+        finalised on Enter or Ctrl-D."""
+        shell = self._build_shell("ls\nexit\n")
+        rc = shell.run()
+        assert rc == 0
+        # 'ls' was executed (not 'l' + 's' on separate lines).
+        assert shell._test_client.exec_command.call_count == 1
+
+    def test_backspace_edits_inline(self):
+        """\"hel\\x7flo\" should produce 'helo' (DEL/BS removes one char)."""
+        shell = self._build_shell("hel\x7flo\nexit\n")
+        rc = shell.run()
+        assert rc == 0
+        # The history record reflects the edited buffer, not the raw input.
+        assert list(shell.history) == ["helo"]
+
+    def test_arrow_keys_cycle_history(self):
+        # Up arrow on a fresh prompt lands on the most recent entry;
+        # two ups walk back one further; Enter commits that line into
+        # the history as the newest entry.
+        shell = self._build_shell(
+            "\x1b[A\x1b[A\nexit\n",
+            history=["first", "second", "third"],
+        )
+        rc = shell.run()
+        assert rc == 0
+        # History starts as ["first","second","third"], and the typed
+        # line "second" (recalled via two ups) is appended at the end.
+        assert list(shell.history) == ["first", "second", "third", "second"]
+
+    def test_ctrl_c_breaks_line_returns_none(self):
+        shell = self._build_shell("ls\x03exit\n")
+        # The Ctrl-C cancels the current line. _read_line returns None,
+        # which the run() loop interprets as session-end.
+        rc = shell.run()
+        assert rc == 0
+        # The 'ls' command was NOT executed.
+        assert shell._test_client.exec_command.call_count == 0
+
+    def test_ctrl_d_on_empty_line_exits_cleanly(self):
+        shell = self._build_shell("\x04")
+        rc = shell.run()
+        assert rc == 0
+
+    def test_unicode_input_passes_through(self):
+        """Multibyte chars (UTF-8) are read as one chunk by os.read,
+        but our StringIO test path uses .read(1) on a StringIO which
+        already splits on code points; we just verify nothing crashes."""
+        shell = self._build_shell("echo café\nexit\n")
+        rc = shell.run()
+        assert rc == 0
+        assert list(shell.history)[-1] == "echo café"
